@@ -35,7 +35,7 @@ PEPROCESS GetProcessByName(const char* szName)
 	//KdPrint(("ActiveProcessLinksOffset = %llX\n", ActiveProcessLinksOffset));
 	if (!ActiveProcessLinksOffset)
 	{
-		KdPrint(("GetActiveProcessLinksOffset failed\n"));
+		DbgPrintEx(0, 0, "[sysR@M]> GetActiveProcessLinksOffset failed\n");
 		return NULL;
 	}
 	Process = PsGetCurrentProcess();
