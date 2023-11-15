@@ -9,6 +9,13 @@ CLIENT_ID currentCid = { 0 };
 HDC hdc;
 HBRUSH brush;
 
+extern "C" {
+	NTKERNELAPI PCHAR PsGetProcessImageFileName(__in PEPROCESS Process);
+}
+inline PEPROCESS DWM_Process;
+inline KAPC_STATE DWM_apc_state;
+
+
 PETHREAD GetWin32Thread(PVOID* win32Thread)
 {
 	int currentThreadId = 1;
@@ -63,62 +70,184 @@ inline void SpoofGuiThread(PVOID newWin32Value, PEPROCESS newProcess, CLIENT_ID 
 	PVOID clientIdPtr = (PVOID)((char*)currentThread + cidOffset);
 	memcpy(clientIdPtr, &newClientId, sizeof(CLIENT_ID));
 }
-bool BeginDraw()
+
+ULONG GetActiveProcessLinksOffset()
 {
-	PVOID targetWin32Thread = 0;
-	PETHREAD targetThread = GetWin32Thread(&targetWin32Thread);
-	if (!targetWin32Thread || !targetThread)
+	UNICODE_STRING FunName = { 0 };
+	RtlInitUnicodeString(&FunName, L"PsGetProcessId");
+	PUCHAR pfnPsGetProcessId = (PUCHAR)MmGetSystemRoutineAddress(&FunName);
+	if (pfnPsGetProcessId && MmIsAddressValid(pfnPsGetProcessId) && MmIsAddressValid(pfnPsGetProcessId + 0x7))
 	{
-		DbgPrintEx(0, 0, "[sysR@M]> Failed to find win32thread");
+		for (size_t i = 0; i < 0x7; i++)
+		{
+			if (pfnPsGetProcessId[i] == 0x48 && pfnPsGetProcessId[i + 1] == 0x8B)
+			{
+				return *(PULONG)(pfnPsGetProcessId + i + 3) + 8;
+			}
+		}
+	}
+	return 0;
+}
+
+PEPROCESS GetProcessByName(const char* szName)
+{
+	PEPROCESS Process = NULL;
+	PCHAR ProcessName = NULL;
+	PLIST_ENTRY pHead = NULL;
+	PLIST_ENTRY pNode = NULL;
+
+	ULONG64 ActiveProcessLinksOffset = GetActiveProcessLinksOffset();
+	//KdPrint(("ActiveProcessLinksOffset = %llX\n", ActiveProcessLinksOffset));
+	if (!ActiveProcessLinksOffset)
+	{
+		DbgPrintEx(0, 0, "[sysR@M]> GetActiveProcessLinksOffset failed\n");
+		return NULL;
+	}
+	Process = PsGetCurrentProcess();
+
+	pHead = (PLIST_ENTRY)((ULONG64)Process + ActiveProcessLinksOffset);
+	pNode = pHead;
+
+	do
+	{
+		Process = (PEPROCESS)((ULONG64)pNode - ActiveProcessLinksOffset);
+		ProcessName = PsGetProcessImageFileName(Process);
+		//KdPrint(("%s\n", ProcessName));
+		if (!strcmp(szName, ProcessName))
+		{
+			return Process;
+		}
+
+		pNode = pNode->Flink;
+	} while (pNode != pHead);
+
+	return NULL;
+}
+
+
+BOOLEAN AttachDWM() { //for UCMapper
+	DWM_Process = GetProcessByName("dwm.exe");
+	if (DWM_Process == NULL) {
+		DbgPrintEx(0, 0, "[sysR@M]> Failed to Get DWM PROCESS");
 		return false;
 	}
-	PEPROCESS targetProcess = PsGetThreadProcess(targetThread);
+	KeStackAttachProcess(DWM_Process, &DWM_apc_state);
+	return true;
+}
 
-	CLIENT_ID targetCid = { 0 };
-	memcpy(&targetCid, (PVOID)((char*)targetThread + cidOffset), sizeof(CLIENT_ID));
+BOOLEAN DetachDWM() { //for UCMapper
+	KeUnstackDetachProcess(&DWM_apc_state);
+	return true;
+}
 
-	KeStackAttachProcess(targetProcess, &apc);
-	SpoofGuiThread(targetWin32Thread, targetProcess, targetCid);
-	hdc = NtUserGetDC(0);
-	if (!hdc)
-	{
-		DbgPrintEx(0, 0, "[sysR@M]> Failed to get userdc");
-		return false;
+namespace Overlay{
+	NTSTATUS Init() {
+		DbgPrintEx(0, 0, "[sysR@M]> Call Attach DWM.\n");
+		if (AttachDWM()) {
+			DbgPrintEx(0, 0, "[sysR@M]> SUCCRSS to attach DWM\n");
+		}
+		else {
+			DbgPrintEx(0, 0, "[sysR@M]> Failed to attach DWM\n");
+			return STATUS_UNSUCCESSFUL;
+		}
+		DbgPrintEx(0, 0, "[sysR@M]> Called AttachDWM\n");
+
+		NTSTATUS status = STATUS_SUCCESS;
+
+
+		PVOID win32kBase = (PVOID)GetKernelModuleBase("win32kbase.sys");
+		PVOID win32kfullBase = (PVOID)GetKernelModuleBase("win32kfull.sys");
+
+		if (!win32kBase || !win32kfullBase)
+		{
+			DbgPrintEx(0, 0, "[sysR@M]> Could not find kernel module bases\n");
+			return STATUS_UNSUCCESSFUL;
+		}
+
+		NtUserGetDCPtr = RtlFindExportedRoutineByName(win32kBase, "NtUserGetDC");
+		NtGdiPatBltPtr = RtlFindExportedRoutineByName(win32kfullBase, "NtGdiPatBlt");
+		NtGdiSelectBrushPtr = RtlFindExportedRoutineByName(win32kBase, "GreSelectBrush");
+		NtUserReleaseDCPtr = RtlFindExportedRoutineByName(win32kBase, "NtUserReleaseDC");
+		NtGdiCreateSolidBrushPtr = RtlFindExportedRoutineByName(win32kfullBase, "NtGdiCreateSolidBrush");
+		NtGdiDeleteObjectAppPtr = RtlFindExportedRoutineByName(win32kBase, "NtGdiDeleteObjectApp");
+		NtGdiExtTextOutWPtr = RtlFindExportedRoutineByName(win32kfullBase, "NtGdiExtTextOutW");
+		NtGdiHfontCreatePtr = RtlFindExportedRoutineByName(win32kfullBase, "hfontCreate");
+		NtGdiSelectFontPtr = RtlFindExportedRoutineByName(win32kfullBase, "NtGdiSelectFont");
+
+
+		if (!NtUserGetDCPtr || !NtGdiPatBltPtr || !NtGdiSelectBrushPtr ||
+			!NtUserReleaseDCPtr || !NtGdiCreateSolidBrushPtr || !NtGdiDeleteObjectAppPtr
+			|| !NtGdiExtTextOutWPtr || !NtGdiHfontCreatePtr || !NtGdiSelectFontPtr)
+		{
+			DbgPrintEx(0, 0, "[sysR@M]> Could not find kernel functions required for drawing\n");
+			return STATUS_UNSUCCESSFUL;
+		}
+
+		if (DetachDWM()) {
+			DbgPrintEx(0, 0, "[sysR@M]> SUCCESS to Detach DWM\n");
+		}
+		else {
+			DbgPrintEx(0, 0, "[sysR@M]> Failed to Detach DWM\n");
+			return STATUS_UNSUCCESSFUL;
+		}
+		return STATUS_SUCCESS;
 	}
-	brush = NtGdiCreateSolidBrush(RGB(255, 0, 0), NULL);
-	if (!brush)
+	bool BeginDraw()
 	{
-		DbgPrintEx(0, 0, "[sysR@M]> Failed create brush");
+		PVOID targetWin32Thread = 0;
+		PETHREAD targetThread = GetWin32Thread(&targetWin32Thread);
+		if (!targetWin32Thread || !targetThread)
+		{
+			DbgPrintEx(0, 0, "[sysR@M]> Failed to find win32thread");
+			return false;
+		}
+		PEPROCESS targetProcess = PsGetThreadProcess(targetThread);
+
+		CLIENT_ID targetCid = { 0 };
+		memcpy(&targetCid, (PVOID)((char*)targetThread + cidOffset), sizeof(CLIENT_ID));
+
+		KeStackAttachProcess(targetProcess, &apc);
+		SpoofGuiThread(targetWin32Thread, targetProcess, targetCid);
+		hdc = NtUserGetDC(0);
+		if (!hdc)
+		{
+			DbgPrintEx(0, 0, "[sysR@M]> Failed to get userdc");
+			return false;
+		}
+		brush = NtGdiCreateSolidBrush(RGB(255, 0, 0), NULL);
+		if (!brush)
+		{
+			DbgPrintEx(0, 0, "[sysR@M]> Failed create brush");
+			NtUserReleaseDC(hdc);
+			return false;
+		}
+	}
+
+	void EndDraw()
+	{
+		NtGdiDeleteObjectApp(brush);
 		NtUserReleaseDC(hdc);
-		return false;
+
+		SpoofGuiThread(currentWin32Thread, currentProcess, currentCid);
+		KeUnstackDetachProcess(&apc);
 	}
-}
 
-void EndDraw()
-{
-	NtGdiDeleteObjectApp(brush);
-	NtUserReleaseDC(hdc);
-
-	SpoofGuiThread(currentWin32Thread, currentProcess, currentCid);
-	KeUnstackDetachProcess(&apc);
-}
-
-
-INT DrawFect(RECT rect, int thickness)
-{
-	HBRUSH oldBrush = NtGdiSelectBrush(hdc, brush);
-	if (!oldBrush)
+	INT DrawFect(RECT rect, int thickness)
 	{
-		DbgPrintEx(0, 0, "[sysR@M]> Failed to get brush");
-		return 0;
+		HBRUSH oldBrush = NtGdiSelectBrush(hdc, brush);
+		if (!oldBrush)
+		{
+			DbgPrintEx(0, 0, "[sysR@M]> Failed to get brush");
+			return 0;
+		}
+
+
+		NtGdiPatBlt(hdc, rect.left, rect.top, thickness, rect.bottom - rect.top, PATCOPY);
+		NtGdiPatBlt(hdc, rect.right - thickness, rect.top, thickness, rect.bottom - rect.top, PATCOPY);
+		NtGdiPatBlt(hdc, rect.left, rect.top, rect.right - rect.left, thickness, PATCOPY);
+		NtGdiPatBlt(hdc, rect.left, rect.bottom - thickness, rect.right - rect.left, thickness, PATCOPY);
+
+		NtGdiSelectBrush(hdc, oldBrush);
+		return 1;
 	}
-
-
-	NtGdiPatBlt(hdc, rect.left, rect.top, thickness, rect.bottom - rect.top, PATCOPY);
-	NtGdiPatBlt(hdc, rect.right - thickness, rect.top, thickness, rect.bottom - rect.top, PATCOPY);
-	NtGdiPatBlt(hdc, rect.left, rect.top, rect.right - rect.left, thickness, PATCOPY);
-	NtGdiPatBlt(hdc, rect.left, rect.bottom - thickness, rect.right - rect.left, thickness, PATCOPY);
-
-	NtGdiSelectBrush(hdc, oldBrush);
-	return 1;
 }
