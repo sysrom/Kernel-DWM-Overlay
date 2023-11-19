@@ -250,4 +250,121 @@ namespace Overlay{
 		NtGdiSelectBrush(hdc, oldBrush);
 		return 1;
 	}
+
+	// thanks https://github.com/BadPlayer555/KernelGDIDraw/blob/master/Test2/Test2/main.cpp#L166
+	BOOL ExtTextOutW(HDC hdc_Func, INT x, INT y, UINT fuOptions, RECT* lprc, LPWSTR lpString, UINT cwc, INT* lpDx)
+	{
+		BOOL		nRet = FALSE;
+		PVOID       local_lpString = NULL;
+		RECT* local_lprc = NULL;
+		INT* local_lpDx = NULL;
+
+		if (lprc != NULL)
+		{
+			SIZE_T Len = sizeof(RECT);
+			local_lprc = (RECT*)AllocateVirtualMemory(Len);
+			if (local_lprc != NULL)
+			{
+				__try
+				{
+					RtlZeroMemory(local_lprc, Len);
+					RtlCopyMemory(local_lprc, lprc, Len);
+				}
+				__except (1)
+				{
+					DbgPrintEx(0,0,"[sysR@M]> ExtTextOutW->RtlCopyMemory Failed!");
+					goto $EXIT;
+				}
+			}
+			else
+			{
+				DbgPrintEx(0, 0, "[sysR@M]> ExtTextOutW->local_lprc = null");
+				goto $EXIT;
+			}
+		}
+		if (cwc != 0)
+		{
+			SIZE_T     AllocSize = sizeof(WCHAR) * cwc + 1;
+			local_lpString = AllocateVirtualMemory(AllocSize);
+			if (local_lpString != NULL)
+			{
+				__try
+				{
+					RtlZeroMemory(local_lpString, AllocSize);
+					RtlCopyMemory(local_lpString, lpString, AllocSize);
+				}
+				__except (1)
+				{
+					DbgPrintEx(0, 0, "[sysR@M]> local_lpString->RtlCopyMemory Failed!");
+					goto $EXIT;
+				}
+			}
+			else
+			{
+				DbgPrintEx(0, 0, "[sysR@M]> local_lpString=null");
+				goto $EXIT;
+			}
+		}
+		if (local_lpDx != NULL)
+		{
+			SIZE_T     AllocSize = sizeof(INT);
+			local_lpDx = (INT*)AllocateVirtualMemory(AllocSize);
+			if (local_lpDx != NULL)
+			{
+				__try
+				{
+					RtlZeroMemory(local_lpString, AllocSize);
+					*local_lpDx = *lpDx;
+				}
+				__except (1)
+				{
+					DbgPrintEx(0, 0, "[sysR@M]> local_lpDx->RtlCopyMemory");
+					goto $EXIT;
+				}
+			}
+			else
+			{
+				DbgPrintEx(0, 0, "[sysR@M]> local_lpDx = null");
+			}
+		}
+
+
+		if (NtGdiExtTextOutW != NULL) {
+			nRet = NtGdiExtTextOutW(hdc_Func, x, y, fuOptions, local_lprc, (LPWSTR)local_lpString, cwc, local_lpDx, 0);
+		}
+		else {
+			DbgPrintEx(0, 0, "[sysR@M]> Call NtGdiExtTextOutW Failed");
+		}
+	$EXIT:
+		if (lprc != NULL)
+		{
+			FreeVirtualMemory(lprc, sizeof(RECT));
+			lprc = NULL;
+		}
+
+		if (local_lpDx != NULL)
+		{
+			FreeVirtualMemory(local_lpDx, sizeof(INT));
+			local_lpDx = NULL;
+		}
+
+		if (local_lpString != NULL)
+		{
+			FreeVirtualMemory(local_lpString, cwc);
+			local_lpString = NULL;
+		}
+		return nRet;
+	}
+
+	BOOL DrawText(INT x, INT y, UINT fuOptions, RECT* lprc, LPCSTR lpString, UINT cch, INT* lpDx)
+	{
+		ANSI_STRING StringA;
+		UNICODE_STRING StringU;
+		BOOL ret;
+		RtlInitAnsiString(&StringA, (LPSTR)lpString);
+		RtlAnsiStringToUnicodeString(&StringU, &StringA, TRUE);
+		ret = ExtTextOutW(hdc, x, y, fuOptions, lprc, StringU.Buffer, cch, lpDx);
+		RtlFreeUnicodeString(&StringU);
+		return ret;
+	}
 }

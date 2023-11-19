@@ -63,3 +63,22 @@ UINT64 GetKernelModuleBase(const char* name)
 	ExFreePoolWithTag(moduleInformation, 0);
 }
 
+PVOID AllocateVirtualMemory(SIZE_T Size)
+{
+	PVOID pMem = NULL;
+	NTSTATUS statusAlloc = ZwAllocateVirtualMemory(NtCurrentProcess(), &pMem, 0, &Size, MEM_COMMIT, PAGE_READWRITE);
+	return pMem;
+}
+
+VOID FreeVirtualMemory(PVOID VirtualAddress, SIZE_T Size)
+{
+	if (MmIsAddressValid(VirtualAddress))
+	{
+		NTSTATUS Status = ZwFreeVirtualMemory(NtCurrentProcess(), &VirtualAddress, &Size, MEM_RELEASE);
+
+		if (!NT_SUCCESS(Status)) {
+			DbgPrintEx(0,0,"[sysR@M]> FreeVirtualMemory Failed!");
+		}
+		return;
+	}
+}
