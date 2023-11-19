@@ -9,9 +9,6 @@ CLIENT_ID currentCid = { 0 };
 HDC hdc;
 HBRUSH brush;
 
-extern "C" {
-	NTKERNELAPI PCHAR PsGetProcessImageFileName(__in PEPROCESS Process);
-}
 inline PEPROCESS DWM_Process;
 inline KAPC_STATE DWM_apc_state;
 
@@ -70,60 +67,6 @@ inline void SpoofGuiThread(PVOID newWin32Value, PEPROCESS newProcess, CLIENT_ID 
 	PVOID clientIdPtr = (PVOID)((char*)currentThread + cidOffset);
 	memcpy(clientIdPtr, &newClientId, sizeof(CLIENT_ID));
 }
-
-ULONG GetActiveProcessLinksOffset()
-{
-	UNICODE_STRING FunName = { 0 };
-	RtlInitUnicodeString(&FunName, L"PsGetProcessId");
-	PUCHAR pfnPsGetProcessId = (PUCHAR)MmGetSystemRoutineAddress(&FunName);
-	if (pfnPsGetProcessId && MmIsAddressValid(pfnPsGetProcessId) && MmIsAddressValid(pfnPsGetProcessId + 0x7))
-	{
-		for (size_t i = 0; i < 0x7; i++)
-		{
-			if (pfnPsGetProcessId[i] == 0x48 && pfnPsGetProcessId[i + 1] == 0x8B)
-			{
-				return *(PULONG)(pfnPsGetProcessId + i + 3) + 8;
-			}
-		}
-	}
-	return 0;
-}
-
-PEPROCESS GetProcessByName(const char* szName)
-{
-	PEPROCESS Process = NULL;
-	PCHAR ProcessName = NULL;
-	PLIST_ENTRY pHead = NULL;
-	PLIST_ENTRY pNode = NULL;
-
-	ULONG64 ActiveProcessLinksOffset = GetActiveProcessLinksOffset();
-	//KdPrint(("ActiveProcessLinksOffset = %llX\n", ActiveProcessLinksOffset));
-	if (!ActiveProcessLinksOffset)
-	{
-		DbgPrintEx(0, 0, "[sysR@M]> GetActiveProcessLinksOffset failed\n");
-		return NULL;
-	}
-	Process = PsGetCurrentProcess();
-
-	pHead = (PLIST_ENTRY)((ULONG64)Process + ActiveProcessLinksOffset);
-	pNode = pHead;
-
-	do
-	{
-		Process = (PEPROCESS)((ULONG64)pNode - ActiveProcessLinksOffset);
-		ProcessName = PsGetProcessImageFileName(Process);
-		//KdPrint(("%s\n", ProcessName));
-		if (!strcmp(szName, ProcessName))
-		{
-			return Process;
-		}
-
-		pNode = pNode->Flink;
-	} while (pNode != pHead);
-
-	return NULL;
-}
-
 
 BOOLEAN AttachDWM() { //for UCMapper
 	DWM_Process = GetProcessByName("dwm.exe");
@@ -356,8 +299,46 @@ namespace Overlay{
 		return nRet;
 	}
 
+	int SetBkMode(_In_ int iBkMode)
+	{
+		PDC_ATTR pdcattr;
+		INT iOldMode;
+		pdcattr = GdiGetDcAttr(hdc);
+		if (pdcattr == NULL)
+		{
+			DbgPrintEx(0, 0, "[sysR@M]> GdiGetDcAttr Invalid!");
+			return 0;
+		}
+		iOldMode = pdcattr->lBkMode;
+		pdcattr->jBkMode = iBkMode; // Processed
+		pdcattr->lBkMode = iBkMode; // Raw
+		return iOldMode;
+	}
+	COLORREF SetTextColor(COLORREF crColor)
+	{
+		PDC_ATTR pdcattr;
+		COLORREF crOldColor;
+		pdcattr = GdiGetDcAttr(hdc);
+		if (pdcattr == NULL)
+		{
+			DbgPrintEx(0, 0, "[sysR@M]> GdiGetDcAttr Invalid!");
+			return CLR_INVALID;
+		}
+		crOldColor = (COLORREF)pdcattr->ulBackgroundClr;
+		pdcattr->ulBackgroundClr = (ULONG)crColor;
+		if (pdcattr->crBackgroundClr != crColor)
+		{
+			pdcattr->crBackgroundClr = crColor;
+		}
+		return crOldColor;
+	}
+
 	BOOL DrawText(INT x, INT y, UINT fuOptions, RECT* lprc, LPCSTR lpString, UINT cch, INT* lpDx)
 	{
+		//INT OldBkMode=SetBkMode(1); //SetBackGround TRANSPARENT(1) | OPAQUE(2) //doesn't work idk why(
+		//DbgPrintEx(0,0,"[sysR@M]> OldBkMode:%d",OldBkMode);
+		//COLORREF OldBackGroundCOLOREF = SetTextColor(RGB(0, 0, 0));
+		//about SetBkMode https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-setbkmode
 		ANSI_STRING StringA;
 		UNICODE_STRING StringU;
 		BOOL ret;

@@ -14,7 +14,7 @@ void MainThread()
 		Overlay::BeginDraw();
 
 		Overlay::DrawFect({ 100, 100, 200, 200 }, 3);
-		Overlay::DrawText(200, 200, 0, NULL, "KernelOverlay", strlen("KernelOverlay"), NULL);
+		Overlay::DrawText(200, 200, NULL, NULL, "KernelOverlay", strlen("KernelOverlay"), NULL);
 		Overlay::EndDraw();
 
 		YieldProcessor();
