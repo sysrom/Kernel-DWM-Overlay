@@ -1,5 +1,5 @@
-# Kernel-DWM-Overlay
-KernelMode DWM(GDI) Overlay (Just for fun,ez detect)</br>
+# Kernel-GDI-Overlay
+KernelMode GDI Overlay (Just for fun,ez detect)</br>
 Support UCMapper, UCMapper Tested(Idk why i cant use kdmapper https://github.com/TheCruZ/kdmapper/issues/111) </br>
 About UCMapper Repo:https://github.com/MmMapIoSpace/UCMapper/
 
